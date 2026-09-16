@@ -176,9 +176,9 @@ jobs:
             echo "CONFIG_NETDEVICES=y"
             echo "CONFIG_WLAN=y"
             echo "CONFIG_WIRELESS=y"
-            echo "CONFIG_CFG80211=m"
+            echo "CONFIG_CFG80211=y"
             echo "CONFIG_CFG80211_INTERNAL_REGDB=y"
-            echo "CONFIG_MAC80211=m"
+            echo "CONFIG_MAC80211=y"
             echo "CONFIG_MAC80211_HAS_RC=y"
             echo "CONFIG_MAC80211_RC_MINSTREL=y"
             echo "CONFIG_MAC80211_RC_DEFAULT_MINSTREL=y"
@@ -867,9 +867,6 @@ jobs:
              echo "$MOD missing" >> $LOG
            fi
           }
-
-          load cfg80211
-          load mac80211
 
           load ath
 
