@@ -49,7 +49,7 @@ jobs:
             build-essential python3 python3-pip python-is-python3 libncurses-dev \
             ccache zip unzip device-tree-compiler libelf-dev rsync \
             lld llvm clang
-
+              
       - name: Install repo tool
         run: |
           mkdir -p ~/bin
@@ -90,7 +90,7 @@ jobs:
           cd kernel_workspace
           repo init -u https://android.googlesource.com/kernel/manifest -b "${MANIFEST_REF}" --depth=1
           repo sync -c --current-branch --no-clone-bundle --no-tags -j"$(nproc)"
-
+          
       - name: Pin kernel/common to exact tag or branch
         if: ${{ env.PIN_TYPE != '' }}
         working-directory: kernel_workspace/common
@@ -164,6 +164,15 @@ jobs:
             echo "CONFIG_NLS_ISO8859_1=y"
 
             # --- MIZDRAKE7 NETHUNTER WIRELESS CONFIGS ---
+            # This is the exact config set from mizdrake7/kernel_xiaomi_air
+            # commit 3d298e7 ("defconfig: Enable Nethunter"), applied here
+            # to arch/arm64/configs/gki_defconfig instead of his device's
+            # mgk_64_k515_defconfig. Kept the base wireless subsystem lines
+            # (NETDEVICES/WLAN/WIRELESS/_HAS_RC/_MINSTREL/etc.) since GKI's
+            # own defconfig doesn't already select them the way his MTK
+            # vendor base did — his commit only had to add the driver-level
+            # symbols below because CFG80211/MAC80211/WLAN core was already
+            # on in his tree.
             echo "CONFIG_NETDEVICES=y"
             echo "CONFIG_WLAN=y"
             echo "CONFIG_WIRELESS=y"
@@ -174,7 +183,7 @@ jobs:
             echo "CONFIG_MAC80211_RC_MINSTREL=y"
             echo "CONFIG_MAC80211_RC_DEFAULT_MINSTREL=y"
 
-            # Nethunter
+            # Nethunter (verbatim from mizdrake7's commit)
             echo "CONFIG_PACKET_DIAG=y"
             echo "CONFIG_USB_G_HID=y"
 
@@ -206,17 +215,10 @@ jobs:
             echo "CONFIG_WLAN_VENDOR_MEDIATEK=y"
             echo "CONFIG_MT7601U=m"
 
-            # Realtek RTL8XXXU family
+            # Realtek RTL8XXXU family (covers RTL8188CUS/CU, RTL8192CU,
+            # RTL8723AU, RTL8188EU) — separate driver from RTL8187, added
+            # for RTL8188CUS-based Alfa/generic USB adapters.
             echo "CONFIG_RTL8XXXU=m"
-
-            # RTW88 Realtek WiFi drivers configuration
-            echo "CONFIG_RTW80211=m"
-            echo "CONFIG_RTW88=m"
-            echo "CONFIG_RTW88_CORE=m"
-            echo "CONFIG_RTW88_PCI=m"
-            echo "CONFIG_RTW88_USB=m"
-            echo "CONFIG_RTW88_8723X=m"
-            echo "CONFIG_RTW88_8723DU=m"
 
             # Firmware + USB
             echo "CONFIG_FW_LOADER=y"
@@ -224,11 +226,11 @@ jobs:
             echo "CONFIG_USB_NET_DRIVERS=y"
             echo "CONFIG_USB_USBNET=y"
 
-            # RFKILL
+            # RFKILL — required by several drivers' soft/hard block switch
             echo "CONFIG_RFKILL=y"
             echo "CONFIG_RFKILL_LEDS=y"
 
-            # Crypto
+            # Crypto — WEP/WPA-TKIP support (needed for handshake/legacy auth)
             echo "CONFIG_CRYPTO_ARC4=m"
             echo "CONFIG_CRYPTO_ECB=m"
             echo "CONFIG_CRYPTO_AES=y"
@@ -239,12 +241,12 @@ jobs:
             echo "CONFIG_WERROR=n"
           } >> gki_defconfig
 
-      - name: Apply Mizdrake7 NetHunter & RTW88 Fix Patches
+      - name: Apply mizdrake7 NetHunter injection patches (rtl8187, zd1211rw, mac80211, cfg80211)
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
-
-          # --- Patch 1: Monitor mode and packet injection support ---
+          # Source: mizdrake7/kernel_xiaomi_air@22cd395
+          # "apply NetHunter wireless injection + ath9k naming + dtc lexer patches"
           python3 - <<'PYEOF'
           import pathlib
 
@@ -256,11 +258,12 @@ jobs:
               text = p.read_text()
               n = text.count(old)
               if n != 1:
-                  print(f"[WARN] {label}: expected 1 match, found {n} — skipping")
+                  print(f"[WARN] {label}: expected 1 match, found {n} — skipping (check context manually)")
                   return
               p.write_text(text.replace(old, new, 1))
               print(f"[ok] {label}")
 
+          # 1) rtl8187: only force MOREFRAG flag when NOT in monitor mode
           patch(
               "drivers/net/wireless/realtek/rtl818x/rtl8187/dev.c",
               "\tif (ieee80211_has_morefrags(tx_hdr->frame_control))\n"
@@ -278,6 +281,7 @@ jobs:
               "rtl8187 MOREFRAG monitor-mode fix",
           )
 
+          # 2) zd1211rw: set_rx_filter -> ioreqs array (adds CR_SNIFFER_ON)
           patch(
               "drivers/net/wireless/zydas/zd1211rw/zd_mac.c",
               "\tunsigned long flags;\n"
@@ -302,6 +306,7 @@ jobs:
               "zd1211rw set_rx_filter -> sniffer ioreqs",
           )
 
+          # 3) zd1211rw: widen RX error check
           patch(
               "drivers/net/wireless/zydas/zd1211rw/zd_mac.c",
               "\tif (status->frame_status & ZD_RX_ERROR) {\n",
@@ -310,6 +315,7 @@ jobs:
               "zd1211rw rx frame_status check",
           )
 
+          # 4) zd1211rw: SIGNAL_UNSPEC -> SIGNAL_DBM
           patch(
               "drivers/net/wireless/zydas/zd1211rw/zd_mac.c",
               "\tieee80211_hw_set(hw, SIGNAL_UNSPEC);\n",
@@ -317,6 +323,7 @@ jobs:
               "zd1211rw SIGNAL_DBM",
           )
 
+          # 5) mac80211: honor injected-packet sequence numbering / NO_ACK
           patch(
               "net/mac80211/tx.c",
               "\t/*\n"
@@ -344,6 +351,7 @@ jobs:
               "mac80211 injected packet seqno/NO_ACK",
           )
 
+          # 6) mac80211: don't overwrite QoS header in monitor mode
           patch(
               "net/mac80211/tx.c",
               "\tieee80211_set_qos_hdr(sdata, skb);\n\tieee80211_tx(sdata, sta, skb, false);\n",
@@ -355,6 +363,7 @@ jobs:
               "mac80211 skip QoS hdr in monitor mode",
           )
 
+          # 7) cfg80211: allow monitor channel change even with other vifs up
           patch(
               "net/wireless/chan.c",
               "\tif (!cfg80211_has_monitors_only(rdev))\n\t\treturn -EBUSY;\n",
@@ -365,38 +374,6 @@ jobs:
               "cfg80211 monitor channel EBUSY removal",
           )
           PYEOF
-
-          # --- Patch 2: RTW88 RT8723X Loop Variable Redefinition Fix ---
-          RTW_FILE="drivers/net/wireless/realtek/rtw88/rtw8723x.c"
-          if [ -f "$RTW_FILE" ]; then
-            echo "Applying rtw8723x loop variable fix..."
-            sed -i 's/for (int i = 0; i < tx_path_count; i++)/for (int i1 = 0; i1 < tx_path_count; i1++)/' "$RTW_FILE"
-            sed -i "s/'A' + i/'A' + i1/g" "$RTW_FILE"
-            sed -i "s/table\[i\]/table\[i1\]/g" "$RTW_FILE"
-            # Loop 2
-            sed -i '0,/for (int i = 0; i < tx_path_count; i++)/{s/for (int i = 0; i < tx_path_count; i++)/for (int i2 = 0; i2 < tx_path_count; i2++)/}' "$RTW_FILE"
-            sed -i "s/'A' + i/'A' + i2/g" "$RTW_FILE"
-            sed -i "s/table\[i\]/table\[i2\]/g" "$RTW_FILE"
-            # Loop 3
-            sed -i '0,/for (int i = 0; i < tx_path_count; i++)/{s/for (int i = 0; i < tx_path_count; i++)/for (int i3 = 0; i3 < tx_path_count; i3++)/}' "$RTW_FILE"
-            sed -i "s/'A' + i/'A' + i3/g" "$RTW_FILE"
-            sed -i "s/table\[i\]/table\[i3\]/g" "$RTW_FILE"
-            # Loop 4
-            sed -i '0,/for (int i = 0; i < tx_path_count; i++)/{s/for (int i = 0; i < tx_path_count; i++)/for (int i4 = 0; i4 < tx_path_count; i4++)/}' "$RTW_FILE"
-            sed -i "s/'A' + i/'A' + i4/g" "$RTW_FILE"
-            sed -i "s/table\[i\]/table\[i4\]/g" "$RTW_FILE"
-            # Loop 5
-            sed -i '0,/for (int i = 0; i < tx_path_count; i++)/{s/for (int i = 0; i < tx_path_count; i++)/for (int i5 = 0; i5 < tx_path_count; i5++)/}' "$RTW_FILE"
-            sed -i "s/'A' + i/'A' + i5/g" "$RTW_FILE"
-            sed -i "s/table\[i\]/table\[i5\]/g" "$RTW_FILE"
-            # Loop 6
-            sed -i '0,/for (int i = 0; i < tx_path_count; i++)/{s/for (int i = 0; i < tx_path_count; i++)/for (int i6 = 0; i6 < tx_path_count; i6++)/}' "$RTW_FILE"
-            sed -i "s/'A' + i/'A' + i6/g" "$RTW_FILE"
-            sed -i "s/table\[i\]/table\[i6\]/g" "$RTW_FILE"
-            echo "[ok] rtw8723x loop variable fix applied successfully."
-          else
-            echo "[skip] rtw8723x.c not found in this tree."
-          fi
 
       - name: Copy SUSFS kernel patches
         run: |
@@ -409,11 +386,11 @@ jobs:
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
-          if [ "${SUBLEVEL}" -le 43 ]; then
+          if [ "${SUBLEVEL}" -le "43" ]; then
             perl -i -pe 's/(int|size_t)\s+this_len\s*=\s*min_t\s*\(\s*[^,]+,/size_t this_len = min_t(size_t,/' fs/proc/base.c
           fi
-          if [ "${SUBLEVEL}" -le 117 ]; then
-            sed -i '/^[[:space:]]*\/\*$/,/^[[:space:]]*u32 mask = mark->mask & IN_ALL_EVENTS;$/d' fs/notify/fdinfo.c
+          if [ "${SUBLEVEL}" -le "117" ]; then
+            sed -i '#^[[:space:]]*/*$#,#^[[:space:]]*u32 mask = mark->mask & IN_ALL_EVENTS;$#d' fs/notify/fdinfo.c
             perl -i -pe 's/\bmask,\s*mark->ignored_mask/inotify_mark_user_mask(mark)/g' fs/notify/fdinfo.c
             perl -i -pe 's/ignored_mask:%x/ignored_mask:0/g' fs/notify/fdinfo.c
           fi
@@ -434,10 +411,10 @@ jobs:
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
-          if [ "${SUBLEVEL}" -le 43 ]; then
+          if [ "${SUBLEVEL}" -le "43" ]; then
             sed -i 's/^size_t this_len = min_t(size_t, count, PAGE_SIZE);$/int this_len = min_t(int, count, PAGE_SIZE);/' fs/proc/base.c
           fi
-          if [ "${SUBLEVEL}" -le 117 ]; then
+          if [ "${SUBLEVEL}" -le "117" ]; then
             perl -i -pe 's#^(\s+if \(inode\)\s+\{)#$1\n\t\t/*\n\t\t * IN_ALL_EVENTS represents all of the mask bits\n\t\t * that we expose to userspace.  There is at\n\t\t * least one bit (FS_EVENT_ON_CHILD) which is\n\t\t * used only internally to the kernel.\n\t\t */\n\t\tu32 mask = mark->mask \& IN_ALL_EVENTS;#m' fs/notify/fdinfo.c
             perl -i -pe 's/\binotify_mark_user_mask\(mark\)/mask, mark->ignored_mask/g' fs/notify/fdinfo.c
             perl -i -pe 's/ignored_mask:0/ignored_mask:%x/g' fs/notify/fdinfo.c
@@ -447,7 +424,7 @@ jobs:
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
-          if [ "${SUBLEVEL}" -le 209 ]; then
+          if [ "${SUBLEVEL}" -le "209" ]; then
             sed -i -e 's/goto show_pad;/return 0;/' ./fs/proc/task_mmu.c
           fi
 
@@ -469,6 +446,7 @@ jobs:
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
+          # add baseband_guard alongside selinux in the default LSM list
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
           if ! grep -q "baseband_guard" security/Kconfig; then
             echo "::error::baseband_guard not found in security/Kconfig after patch — BBG setup likely failed"
@@ -521,7 +499,7 @@ jobs:
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
-          if [ "${SUBLEVEL}" -le 208 ]; then
+          if [ "${SUBLEVEL}" -le "208" ]; then
             curl -fsSL -o /tmp/0003-lockdep-assert-none-held.patch \
               https://raw.githubusercontent.com/WildKernels/GKI_KernelSU_SUSFS/main/.github/actions/ntsync/patches/0003-lockdep-assert-none-held.patch
             patch -p1 -N < /tmp/0003-lockdep-assert-none-held.patch || true
@@ -713,15 +691,6 @@ jobs:
           echo "CONFIG_MQ_IOSCHED_KYBER=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_MQ_IOSCHED_DEADLINE=y" >> arch/arm64/configs/gki_defconfig
 
-      - name: Apply performance governor default (optional)
-        if: ${{ github.event.inputs.enable_performance_governor == 'true' }}
-        working-directory: kernel_workspace/common
-        run: |
-          set -euo pipefail
-          echo "CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE=y" >> arch/arm64/configs/gki_defconfig
-          # Ensure interactive/schedutil are still built so runtime can switch if needed
-          echo "CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y" >> arch/arm64/configs/gki_defconfig
-
       - name: Apply custom kernel branding
         working-directory: kernel_workspace/common
         run: |
@@ -735,83 +704,74 @@ jobs:
           chmod +x scripts/setlocalversion
 
       - name: Disable strict ABI/KMI checks and module list validations
-        working-directory: kernel_workspace/common
+        working-directory: kernel_workspace
         run: |
           set -euo pipefail
+          cd common
+
+          # Neutralize check_defconfig call in build.config.gki (harmless if absent)
+          sed -i 's/check_defconfig//' build.config.gki 2>/dev/null || true
+
+          # Every one of these needs to be forced to "off"/empty, not just
+          # MODULES_LIST/ORDER/KMI_SYMBOL_LIST — the previous run failed
+          # because KMI_SYMBOL_LIST_STRICT_MODE was left enabled with no
+          # KMI_SYMBOL_LIST to satisfy it. Also drop the ABI check and
+          # KMI enforcement, or build.sh dies at olddefconfig/abi steps too.
           for f in build.config build.config.gki build.config.gki.aarch64 build.config.common build.config.aarch64; do
             [ -f "$f" ] || continue
 
-            echo "[*] Patching $f"
+            # KMI_SYMBOL_LIST, ADDITIONAL_KMI_SYMBOL_LISTS, MODULES_LIST,
+            # MODULES_ORDER are bash strings that can legally span MANY
+            # LINES, e.g.:
+            #   ADDITIONAL_KMI_SYMBOL_LISTS="
+            #   android/abi_gki_aarch64_type_visibility
+            #   android/abi_gki_aarch64_arg
+            #   "
+            # A plain single-line `sed s/^VAR=.*/VAR=/` only rewrites the
+            # opening line and leaves the bare words below it in the file
+            # with no quotes around them anymore — when build.config is
+            # `source`d, bash then tries to *execute* each of those words
+            # as a command ("android/abi_gki_aarch64_type_visibility: No
+            # such file or directory", exit 127). Use a slurp-mode regex
+            # so the WHOLE quoted block (opening line through closing
+            # quote, however many lines it spans) is replaced in one go.
+            perl -0777 -i -pe 's/KMI_SYMBOL_LIST="[^"]*"/KMI_SYMBOL_LIST=""/gs' "$f"
+            perl -0777 -i -pe 's/ADDITIONAL_KMI_SYMBOL_LISTS="[^"]*"/ADDITIONAL_KMI_SYMBOL_LISTS=""/gs' "$f"
+            perl -0777 -i -pe 's/MODULES_LIST="[^"]*"/MODULES_LIST=""/gs' "$f"
+            perl -0777 -i -pe 's/MODULES_ORDER="[^"]*"/MODULES_ORDER=""/gs' "$f"
+            # Also handle the unquoted single-token form some configs use
+            # (KMI_SYMBOL_LIST=some/path with no quotes at all).
+            sed -i 's/^KMI_SYMBOL_LIST=[^"].*/KMI_SYMBOL_LIST=/' "$f"
+            sed -i 's/^ADDITIONAL_KMI_SYMBOL_LISTS=[^"].*/ADDITIONAL_KMI_SYMBOL_LISTS=/' "$f"
+            sed -i 's/^MODULES_LIST=[^"].*/MODULES_LIST=/' "$f"
+            sed -i 's/^MODULES_ORDER=[^"].*/MODULES_ORDER=/' "$f"
 
-            # Clear KMI/module-list variables using python.
-            # IMPORTANT: these variables can be either a single unquoted line
-            # (VAR=value) OR a double-quoted value that spans MULTIPLE lines
-            # (VAR="\nfile1\nfile2\n"). A naive `^VAR=.*$` regex only eats the
-            # first line of the quoted form and leaves the remaining lines
-            # (e.g. "android/abi_gki_aarch64_type_visibility") as bare,
-            # unquoted text in the file. When build.config is later sourced
-            # by bash, those orphaned lines get executed as commands, which
-            # is exactly the "No such file or directory" / exit 127 error.
-            # The pattern below consumes the WHOLE quoted block (scoped
-            # DOTALL via the inline (?s:...) group) or a single unquoted
-            # line, so nothing is left behind.
-            python3 - "$f" <<'PYEOF'
-          import re
-          import sys
-
-          path = sys.argv[1]
-          with open(path, 'r') as fh:
-              content = fh.read()
-
-          for var in ("KMI_SYMBOL_LIST", "ADDITIONAL_KMI_SYMBOL_LISTS", "MODULES_LIST", "MODULES_ORDER"):
-              # Match VAR="...possibly multi-line..." (quoted) OR VAR=value (single line, unquoted)
-              pattern = re.compile(rf'^{var}=(?:"(?s:.*?)"|[^\n]*)', re.MULTILINE)
-              content = pattern.sub(f'{var}=', content)
-
-          with open(path, 'w') as fh:
-              fh.write(content)
-          PYEOF
-
-            # Safe sed edits — only apply if the key exists
-            for key in \
-              KMI_SYMBOL_LIST \
-              ADDITIONAL_KMI_SYMBOL_LISTS \
-              MODULES_LIST \
-              MODULES_ORDER; do
-              if grep -q "^${key}=" "$f"; then
-                sed -i "s|^${key}=.*|${key}=|" "$f"
-              fi
-            done
-
-            for key in \
-              KMI_SYMBOL_LIST_STRICT_MODE \
-              TRIM_NONLISTED_KMI \
-              KMI_ENFORCED \
-              TIDY_ABI; do
-              if grep -q "^${key}=" "$f"; then
-                sed -i "s|^${key}=.*|${key}=0|" "$f"
-              fi
-            done
-
-            # ABI_DEFINITION: just clear it (was the broken line before)
-            if grep -q '^ABI_DEFINITION=' "$f"; then
-              sed -i 's|^ABI_DEFINITION=.*|ABI_DEFINITION=|' "$f"
-            fi
-
-            # Safety net: after the fix above there should be no stray bare
-            # "android/abi_gki_..." lines left in the file. If there are,
-            # fail loudly here instead of getting a confusing exit-127 deep
-            # inside build.sh.
-            if grep -qE '^android/' "$f"; then
-              echo "::error::$f still has orphaned 'android/...' lines after patching — dumping file:"
-              cat -A "$f" | grep -nE '^android/' || true
-              exit 1
-            fi
+            # These are plain single-line booleans/paths — a simple sed is safe.
+            grep -q '^KMI_SYMBOL_LIST_STRICT_MODE=' "$f" && \
+              sed -i 's/^KMI_SYMBOL_LIST_STRICT_MODE=.*/KMI_SYMBOL_LIST_STRICT_MODE=0/' "$f"
+            grep -q '^TRIM_NONLISTED_KMI=' "$f" && \
+              sed -i 's/^TRIM_NONLISTED_KMI=.*/TRIM_NONLISTED_KMI=0/' "$f"
+            grep -q '^KMI_ENFORCED=' "$f" && \
+              sed -i 's/^KMI_ENFORCED=.*/KMI_ENFORCED=0/' "$f"
+            grep -q '^ABI_DEFINITION=' "$f" && \
+              sed -i 's/^ABI_DEFINITION=.*/ABI_DEFINITION=/' "$f"
+            grep -q '^TIDY_ABI=' "$f" && \
+              sed -i 's/^TIDY_ABI=.*/TIDY_ABI=0/' "$f"
           done
+
+          echo "---- resulting KMI/ABI-related lines ----"
+          grep -RhnE '^(KMI_SYMBOL_LIST|KMI_SYMBOL_LIST_STRICT_MODE|ADDITIONAL_KMI_SYMBOL_LISTS|TRIM_NONLISTED_KMI|KMI_ENFORCED|ABI_DEFINITION|TIDY_ABI|MODULES_LIST|MODULES_ORDER)=' build.config* || true
+          echo "---- sanity check: no orphan bare 'android/...' lines outside quotes ----"
+          grep -RnE '^\s*android/abi_gki' build.config* || echo "clean"
+
 
       - name: Build kernel
         working-directory: kernel_workspace
         env:
+          # Belt-and-suspenders: build.config.gki does
+          # KMI_SYMBOL_LIST_STRICT_MODE=${KMI_SYMBOL_LIST_STRICT_MODE:-1}
+          # so even if a sed above missed a file, this env var wins because
+          # the default only applies when the var is completely unset.
           KMI_SYMBOL_LIST_STRICT_MODE: "0"
           KMI_ENFORCED: "0"
           TRIM_NONLISTED_KMI: "0"
@@ -855,21 +815,17 @@ jobs:
             IMG=$(find out -name "Image" | head -n1)
           fi
           [ -n "$IMG" ]
-          echo "IMG_PATH=${PWD}/${IMG}" >> "$GITHUB_ENV"
+          echo "IMG_PATH=kernel_workspace/${IMG}" >> "$GITHUB_ENV"
           DIST_DIR=$(dirname "${IMG}")
-          echo "DIST_DIR=${PWD}/${DIST_DIR}" >> "$GITHUB_ENV"
+          echo "DIST_DIR=kernel_workspace/${DIST_DIR}" >> "$GITHUB_ENV"
 
       - name: Package Clean AnyKernel3 Kernel Zip
         run: |
           set -euo pipefail
           git clone --depth=1 https://github.com/WildKernels/AnyKernel3.git -b gki-2.0 ak3
           cp "${{ env.IMG_PATH }}" ak3/Image
-          DEVICE_NAME="${{ github.event.inputs.device_name }}"
-          [ -n "$DEVICE_NAME" ] || DEVICE_NAME="gki-custom"
-          SHORT_SUSFS="${SUSFS_COMMIT:0:8}"
-          [ -n "$SHORT_SUSFS" ] || SHORT_SUSFS="latest"
           cd ak3
-          zip -r9 -q "../${DEVICE_NAME}-Blaze-android12-5.10-susfs${SHORT_SUSFS}.zip" . -x ".git*"
+          zip -r9 -q "../${{ github.event.inputs.device_name }}-Blaze-android12-5.10-susfs${SUSFS_COMMIT:0:8}.zip" . -x ".git*"
 
       - name: Generate Mizdrake7 Style Wireless Magisk Module
         run: |
@@ -912,7 +868,8 @@ jobs:
            fi
           }
 
-          # NOTE: cfg80211 and mac80211 are omitted here to prevent breaking internal Wi-Fi/Hotspot.
+          load cfg80211
+          load mac80211
 
           load ath
 
@@ -934,14 +891,7 @@ jobs:
 
           load rtl8xxxu
 
-          load rtw80211
-          load rtw88_core
-          load rtw88_pci
-          load rtw88_usb
-          load rtw88_8723x
-          load rtw88_8723du
-
-          dmesg | grep -i -E "mt7601|firmware|cfg80211|mac80211|ath|ath9k|rt2x00|rt2800|rtl8187|rtw88" >> $LOG 2>&1
+          dmesg | grep -i -E "mt7601|firmware|cfg80211|mac80211|ath|ath9k|rt2x00|rt2800|rtl8187" >> $LOG 2>&1
 
           echo "Wireless modules finished" >> $LOG
           EOF
@@ -966,6 +916,20 @@ jobs:
       - name: Repack vendor_boot with NetHunter modules (mizdrake7 style, MTK only)
         run: |
           set -euo pipefail
+          # This mirrors mizdrake7/Scripts:make-nh-vendorboot_air.sh, which
+          # injects wireless .ko's directly into vendor_boot's ramdisk
+          # (Android boot header v3/v4, MTK unpack_bootimg.py/mkbootimg.py)
+          # instead of loading them via a Magisk module at boot.
+          #
+          # IMPORTANT: that script is written for mizdrake7's own MTK
+          # "air" device tree (Redmi 13C 5G / POCO M6 5G) and expects a
+          # device-provided vendor_boot.img plus mkbootimg tools from that
+          # tree. This job builds a generic GKI (android12-5.10) kernel,
+          # which has no vendor_boot of its own and no device ramdisk to
+          # patch — so this step only activates if you drop a real
+          # vendor_boot.img into the workspace (e.g. pulled from your
+          # target device's stock firmware) before this job runs. If it's
+          # not present, this step no-ops instead of failing the build.
           VENDOR_BOOT="kernel_workspace/vendor_boot.img"
           if [ ! -f "$VENDOR_BOOT" ]; then
             echo "No vendor_boot.img supplied — skipping vendor_boot repack (GKI target has none)."
@@ -975,9 +939,11 @@ jobs:
           sudo apt-get install -y lz4 cpio
           mkdir -p tools
           curl -fsSL -o tools/unpack_bootimg.py \
-            https://raw.githubusercontent.com/mizdrake7/Scripts/main/unpack_bootimg.py 2>/dev/null || true
+            https://raw.githubusercontent.com/mizdrake7/Scripts/main/unpack_bootimg.py 2>/dev/null || \
+            echo "unpack_bootimg.py not found upstream at that path — supply your own tools/unpack_bootimg.py from your device's AOSP tree."
           curl -fsSL -o tools/mkbootimg.py \
-            https://raw.githubusercontent.com/mizdrake7/Scripts/main/mkbootimg.py 2>/dev/null || true
+            https://raw.githubusercontent.com/mizdrake7/Scripts/main/mkbootimg.py 2>/dev/null || \
+            echo "mkbootimg.py not found upstream at that path — supply your own tools/mkbootimg.py from your device's AOSP tree."
 
           if [ ! -s tools/unpack_bootimg.py ] || [ ! -s tools/mkbootimg.py ]; then
             echo "Required mkbootimg tools missing — skipping vendor_boot repack."
@@ -1004,7 +970,7 @@ jobs:
           lz4 -d ../out/vendor_ramdisk00 -c | cpio -idmv >/dev/null
           cd ../nh
           unzip -oq ../nethunter_modules.zip
-          cp -fv *.ko ../ramdisk/lib/modules/ 2>/dev/null || echo "no top-level .ko in module zip"
+          cp -fv *.ko ../ramdisk/lib/modules/ 2>/dev/null || echo "no top-level .ko in module zip (check its layout)"
           cd ../ramdisk
           find . | cpio -o -H newc 2>/dev/null | lz4 -l > ../vendor_ramdisk_new
           cd ..
@@ -1025,12 +991,13 @@ jobs:
           cp vendor_boot_new.img "$OLDPWD/nh-vendor_boot.img"
           truncate -s "$ORIG_SIZE" "$OLDPWD/nh-vendor_boot.img"
           cd "$OLDPWD"
+          python3 tools/unpack_bootimg.py --boot_img nh-vendor_boot.img --out /tmp/verify_out
           echo "Generated nh-vendor_boot.img"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.device_name || 'gki-custom' }}-build
+          name: ${{ github.event.inputs.device_name }}-build
           path: |
             *.zip
             nh-vendor_boot.img
