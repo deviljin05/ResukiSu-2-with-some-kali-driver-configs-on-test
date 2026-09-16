@@ -128,9 +128,14 @@ jobs:
         run: |
           cd kernel_workspace/common/arch/arm64/configs
           {
+            # FORCE NON-LTO STRUCT AT CODE LEVEL
             echo "CONFIG_LTO_NONE=y"
             echo "# CONFIG_LTO_CLANG_THIN is not set"
             echo "# CONFIG_LTO_CLANG_FULL is not set"
+
+            # DISABLE CFI SECURITY ENGINE (BYPASSES NON-LTO BOOTLOOP)
+            echo "# CONFIG_CFI_CLANG is not set"
+            echo "# CONFIG_CFI_CLANG_SHADOW is not set"
 
             echo "CONFIG_KSU=y"
             echo "CONFIG_KSU_SUSFS=y"
