@@ -49,7 +49,7 @@ jobs:
             build-essential python3 python3-pip python-is-python3 libncurses-dev \
             ccache zip unzip device-tree-compiler libelf-dev rsync \
             lld llvm clang
-              
+
       - name: Install repo tool
         run: |
           mkdir -p ~/bin
@@ -90,7 +90,7 @@ jobs:
           cd kernel_workspace
           repo init -u https://android.googlesource.com/kernel/manifest -b "${MANIFEST_REF}" --depth=1
           repo sync -c --current-branch --no-clone-bundle --no-tags -j"$(nproc)"
-          
+
       - name: Pin kernel/common to exact tag or branch
         if: ${{ env.PIN_TYPE != '' }}
         working-directory: kernel_workspace/common
@@ -243,7 +243,7 @@ jobs:
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
-          
+
           # --- Patch 1: Monitor mode and packet injection support ---
           python3 - <<'PYEOF'
           import pathlib
@@ -409,11 +409,11 @@ jobs:
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
-          if [ "${SUBLEVEL}" -le "43" ]; then
+          if [ "${SUBLEVEL}" -le 43 ]; then
             perl -i -pe 's/(int|size_t)\s+this_len\s*=\s*min_t\s*\(\s*[^,]+,/size_t this_len = min_t(size_t,/' fs/proc/base.c
           fi
-          if [ "${SUBLEVEL}" -le "117" ]; then
-            sed -i '#^[[:space:]]*/*$#,#^[[:space:]]*u32 mask = mark->mask & IN_ALL_EVENTS;$#d' fs/notify/fdinfo.c
+          if [ "${SUBLEVEL}" -le 117 ]; then
+            sed -i '/^[[:space:]]*\/\*$/,/^[[:space:]]*u32 mask = mark->mask & IN_ALL_EVENTS;$/d' fs/notify/fdinfo.c
             perl -i -pe 's/\bmask,\s*mark->ignored_mask/inotify_mark_user_mask(mark)/g' fs/notify/fdinfo.c
             perl -i -pe 's/ignored_mask:%x/ignored_mask:0/g' fs/notify/fdinfo.c
           fi
@@ -434,10 +434,10 @@ jobs:
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
-          if [ "${SUBLEVEL}" -le "43" ]; then
+          if [ "${SUBLEVEL}" -le 43 ]; then
             sed -i 's/^size_t this_len = min_t(size_t, count, PAGE_SIZE);$/int this_len = min_t(int, count, PAGE_SIZE);/' fs/proc/base.c
           fi
-          if [ "${SUBLEVEL}" -le "117" ]; then
+          if [ "${SUBLEVEL}" -le 117 ]; then
             perl -i -pe 's#^(\s+if \(inode\)\s+\{)#$1\n\t\t/*\n\t\t * IN_ALL_EVENTS represents all of the mask bits\n\t\t * that we expose to userspace.  There is at\n\t\t * least one bit (FS_EVENT_ON_CHILD) which is\n\t\t * used only internally to the kernel.\n\t\t */\n\t\tu32 mask = mark->mask \& IN_ALL_EVENTS;#m' fs/notify/fdinfo.c
             perl -i -pe 's/\binotify_mark_user_mask\(mark\)/mask, mark->ignored_mask/g' fs/notify/fdinfo.c
             perl -i -pe 's/ignored_mask:0/ignored_mask:%x/g' fs/notify/fdinfo.c
@@ -447,7 +447,7 @@ jobs:
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
-          if [ "${SUBLEVEL}" -le "209" ]; then
+          if [ "${SUBLEVEL}" -le 209 ]; then
             sed -i -e 's/goto show_pad;/return 0;/' ./fs/proc/task_mmu.c
           fi
 
@@ -521,7 +521,7 @@ jobs:
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
-          if [ "${SUBLEVEL}" -le "208" ]; then
+          if [ "${SUBLEVEL}" -le 208 ]; then
             curl -fsSL -o /tmp/0003-lockdep-assert-none-held.patch \
               https://raw.githubusercontent.com/WildKernels/GKI_KernelSU_SUSFS/main/.github/actions/ntsync/patches/0003-lockdep-assert-none-held.patch
             patch -p1 -N < /tmp/0003-lockdep-assert-none-held.patch || true
@@ -713,6 +713,15 @@ jobs:
           echo "CONFIG_MQ_IOSCHED_KYBER=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_MQ_IOSCHED_DEADLINE=y" >> arch/arm64/configs/gki_defconfig
 
+      - name: Apply performance governor default (optional)
+        if: ${{ github.event.inputs.enable_performance_governor == 'true' }}
+        working-directory: kernel_workspace/common
+        run: |
+          set -euo pipefail
+          echo "CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE=y" >> arch/arm64/configs/gki_defconfig
+          # Ensure interactive/schedutil are still built so runtime can switch if needed
+          echo "CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y" >> arch/arm64/configs/gki_defconfig
+
       - name: Apply custom kernel branding
         working-directory: kernel_workspace/common
         run: |
@@ -726,30 +735,26 @@ jobs:
           chmod +x scripts/setlocalversion
 
       - name: Disable strict ABI/KMI checks and module list validations
-        working-directory: kernel_workspace
+        working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
-          cd common
-
-          # Safely clear config lists without sed syntax errors
           for f in build.config build.config.gki build.config.gki.aarch64 build.config.common build.config.aarch64; do
             [ -f "$f" ] || continue
 
-            # Clear quoted variables safely using python or direct string replacement
-            python3 -c "
-            path = '$f'
-            with open(path, 'r') as file:
-                content = file.read()
-            
-            import re
-            content = re.sub(r'KMI_SYMBOL_LIST=\".*?\"', 'KMI_SYMBOL_LIST=\"\"', content)
-            content = re.sub(r'ADDITIONAL_KMI_SYMBOL_LISTS=\".*?\"', 'ADDITIONAL_KMI_SYMBOL_LISTS=\"\"', content)
-            content = re.sub(r'MODULES_LIST=\".*?\"', 'MODULES_LIST=\"\"', content)
-            content = re.sub(r'MODULES_ORDER=\".*?\"', 'MODULES_ORDER=\"\"', content)
-            
-            with open(path, 'w') as file:
-                file.write(content)
-            "
+            python3 - "$f" <<'PYEOF'
+          import re
+          import sys
+
+          path = sys.argv[1]
+          with open(path, 'r') as fh:
+              content = fh.read()
+
+          for var in ("KMI_SYMBOL_LIST", "ADDITIONAL_KMI_SYMBOL_LISTS", "MODULES_LIST", "MODULES_ORDER"):
+              content = re.sub(rf'{var}="[^"]*"', f'{var}=""', content)
+
+          with open(path, 'w') as fh:
+              fh.write(content)
+          PYEOF
 
             sed -i 's/^KMI_SYMBOL_LIST=.*/KMI_SYMBOL_LIST=/' "$f"
             sed -i 's/^ADDITIONAL_KMI_SYMBOL_LISTS=.*/ADDITIONAL_KMI_SYMBOL_LISTS=/' "$f"
@@ -767,6 +772,7 @@ jobs:
             grep -q '^TIDY_ABI=' "$f" && \
               sed -i 's/^TIDY_ABI=.*/TIDY_ABI=0/' "$f"
           done
+
       - name: Build kernel
         working-directory: kernel_workspace
         env:
@@ -813,17 +819,21 @@ jobs:
             IMG=$(find out -name "Image" | head -n1)
           fi
           [ -n "$IMG" ]
-          echo "IMG_PATH=kernel_workspace/${IMG}" >> "$GITHUB_ENV"
+          echo "IMG_PATH=${PWD}/${IMG}" >> "$GITHUB_ENV"
           DIST_DIR=$(dirname "${IMG}")
-          echo "DIST_DIR=kernel_workspace/${DIST_DIR}" >> "$GITHUB_ENV"
+          echo "DIST_DIR=${PWD}/${DIST_DIR}" >> "$GITHUB_ENV"
 
       - name: Package Clean AnyKernel3 Kernel Zip
         run: |
           set -euo pipefail
           git clone --depth=1 https://github.com/WildKernels/AnyKernel3.git -b gki-2.0 ak3
           cp "${{ env.IMG_PATH }}" ak3/Image
+          DEVICE_NAME="${{ github.event.inputs.device_name }}"
+          [ -n "$DEVICE_NAME" ] || DEVICE_NAME="gki-custom"
+          SHORT_SUSFS="${SUSFS_COMMIT:0:8}"
+          [ -n "$SHORT_SUSFS" ] || SHORT_SUSFS="latest"
           cd ak3
-          zip -r9 -q "../${{ github.event.inputs.device_name }}-Blaze-android12-5.10-susfs${SUSFS_COMMIT:0:8}.zip" . -x ".git*"
+          zip -r9 -q "../${DEVICE_NAME}-Blaze-android12-5.10-susfs${SHORT_SUSFS}.zip" . -x ".git*"
 
       - name: Generate Mizdrake7 Style Wireless Magisk Module
         run: |
@@ -984,7 +994,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.device_name }}-build
+          name: ${{ github.event.inputs.device_name || 'gki-custom' }}-build
           path: |
             *.zip
             nh-vendor_boot.img
