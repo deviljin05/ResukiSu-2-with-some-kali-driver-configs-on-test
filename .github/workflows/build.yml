@@ -778,7 +778,7 @@ jobs:
           TIDY_ABI: "0"
         run: |
           set -euo pipefail
-          LTO=thin \
+          LTO=none \
           BUILD_CONFIG=common/build.config.gki.aarch64 \
           USE_CCACHE=1 \
           CCACHE_DIR="${CCACHE_DIR}" \
