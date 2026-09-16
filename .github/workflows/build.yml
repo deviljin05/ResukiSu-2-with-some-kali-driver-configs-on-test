@@ -741,6 +741,9 @@ jobs:
           for f in build.config build.config.gki build.config.gki.aarch64 build.config.common build.config.aarch64; do
             [ -f "$f" ] || continue
 
+            echo "[*] Patching $f"
+
+            # Clear quoted variables using python (handles both quoted and unquoted)
             python3 - "$f" <<'PYEOF'
           import re
           import sys
@@ -750,27 +753,38 @@ jobs:
               content = fh.read()
 
           for var in ("KMI_SYMBOL_LIST", "ADDITIONAL_KMI_SYMBOL_LISTS", "MODULES_LIST", "MODULES_ORDER"):
-              content = re.sub(rf'{var}="[^"]*"', f'{var}=""', content)
+              # Match VAR="..." or VAR=...
+              content = re.sub(rf'^{var}=.*$', f'{var}=', content, flags=re.MULTILINE)
 
           with open(path, 'w') as fh:
               fh.write(content)
           PYEOF
 
-            sed -i 's/^KMI_SYMBOL_LIST=.*/KMI_SYMBOL_LIST=/' "$f"
-            sed -i 's/^ADDITIONAL_KMI_SYMBOL_LISTS=.*/ADDITIONAL_KMI_SYMBOL_LISTS=/' "$f"
-            sed -i 's/^MODULES_LIST=.*/MODULES_LIST=/' "$f"
-            sed -i 's/^MODULES_ORDER=.*/MODULES_ORDER=/' "$f"
+            # Safe sed edits — only apply if the key exists
+            for key in \
+              KMI_SYMBOL_LIST \
+              ADDITIONAL_KMI_SYMBOL_LISTS \
+              MODULES_LIST \
+              MODULES_ORDER; do
+              if grep -q "^${key}=" "$f"; then
+                sed -i "s|^${key}=.*|${key}=|" "$f"
+              fi
+            done
 
-            grep -q '^KMI_SYMBOL_LIST_STRICT_MODE=' "$f" && \
-              sed -i 's/^KMI_SYMBOL_LIST_STRICT_MODE=.*/KMI_SYMBOL_LIST_STRICT_MODE=0/' "$f"
-            grep -q '^TRIM_NONLISTED_KMI=' "$f" && \
-              sed -i 's/^TRIM_NONLISTED_KMI=.*/TRIM_NONLISTED_KMI=0/' "$f"
-            grep -q '^KMI_ENFORCED=' "$f" && \
-              sed -i 's/^KMI_ENFORCED=.*/KMI_ENFORCED=0/' "$f"
-            grep -q '^ABI_DEFINITION=' "$f" && \
-              sed -i 's/^ABI_DEFINITION=/' "$f"
-            grep -q '^TIDY_ABI=' "$f" && \
-              sed -i 's/^TIDY_ABI=.*/TIDY_ABI=0/' "$f"
+            for key in \
+              KMI_SYMBOL_LIST_STRICT_MODE \
+              TRIM_NONLISTED_KMI \
+              KMI_ENFORCED \
+              TIDY_ABI; do
+              if grep -q "^${key}=" "$f"; then
+                sed -i "s|^${key}=.*|${key}=0|" "$f"
+              fi
+            done
+
+            # ABI_DEFINITION: just clear it (was the broken line before)
+            if grep -q '^ABI_DEFINITION=' "$f"; then
+              sed -i 's|^ABI_DEFINITION=.*|ABI_DEFINITION=|' "$f"
+            fi
           done
 
       - name: Build kernel
