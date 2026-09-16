@@ -731,20 +731,30 @@ jobs:
           set -euo pipefail
           cd common
 
-          sed -i 's/check_defconfig//' build.config.gki 2>/dev/null || true
-
+          # Safely clear config lists without sed syntax errors
           for f in build.config build.config.gki build.config.gki.aarch64 build.config.common build.config.aarch64; do
             [ -f "$f" ] || continue
 
-            perl -0777 -i -pe 's/KMI_SYMBOL_LIST="[^"]*"/KMI_SYMBOL_LIST=""/gs' "$f"
-            perl -0777 -i -pe 's/ADDITIONAL_KMI_SYMBOL_LISTS="[^"]*"/ADDITIONAL_KMI_SYMBOL_LISTS=""/gs' "$f"
-            perl -0777 -i -pe 's/MODULES_LIST="[^"]*"/MODULES_LIST=""/gs' "$f"
-            perl -0777 -i -pe 's/MODULES_ORDER="[^"]*"/MODULES_ORDER=""/gs' "$f"
+            # Clear quoted variables safely using python or direct string replacement
+            python3 -c "
+            path = '$f'
+            with open(path, 'r') as file:
+                content = file.read()
+            
+            import re
+            content = re.sub(r'KMI_SYMBOL_LIST=\".*?\"', 'KMI_SYMBOL_LIST=\"\"', content)
+            content = re.sub(r'ADDITIONAL_KMI_SYMBOL_LISTS=\".*?\"', 'ADDITIONAL_KMI_SYMBOL_LISTS=\"\"', content)
+            content = re.sub(r'MODULES_LIST=\".*?\"', 'MODULES_LIST=\"\"', content)
+            content = re.sub(r'MODULES_ORDER=\".*?\"', 'MODULES_ORDER=\"\"', content)
+            
+            with open(path, 'w') as file:
+                file.write(content)
+            "
 
-            sed -i 's/^KMI_SYMBOL_LIST=[^"].*/KMI_SYMBOL_LIST=/' "$f"
-            sed -i 's/^ADDITIONAL_KMI_SYMBOL_LISTS=[^"].*/ADDITIONAL_KMI_SYMBOL_LISTS=/' "$f"
-            sed -i 's/^MODULES_LIST=[^"].*/MODULES_LIST=/' "$f"
-            sed -i 's/^MODULES_ORDER=[^"].*/MODULES_ORDER=/' "$f"
+            sed -i 's/^KMI_SYMBOL_LIST=.*/KMI_SYMBOL_LIST=/' "$f"
+            sed -i 's/^ADDITIONAL_KMI_SYMBOL_LISTS=.*/ADDITIONAL_KMI_SYMBOL_LISTS=/' "$f"
+            sed -i 's/^MODULES_LIST=.*/MODULES_LIST=/' "$f"
+            sed -i 's/^MODULES_ORDER=.*/MODULES_ORDER=/' "$f"
 
             grep -q '^KMI_SYMBOL_LIST_STRICT_MODE=' "$f" && \
               sed -i 's/^KMI_SYMBOL_LIST_STRICT_MODE=.*/KMI_SYMBOL_LIST_STRICT_MODE=0/' "$f"
@@ -757,7 +767,6 @@ jobs:
             grep -q '^TIDY_ABI=' "$f" && \
               sed -i 's/^TIDY_ABI=.*/TIDY_ABI=0/' "$f"
           done
-
       - name: Build kernel
         working-directory: kernel_workspace
         env:
