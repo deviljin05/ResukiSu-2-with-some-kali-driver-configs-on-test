@@ -128,6 +128,10 @@ jobs:
         run: |
           cd kernel_workspace/common/arch/arm64/configs
           {
+            echo "CONFIG_LTO_NONE=y"
+            echo "# CONFIG_LTO_CLANG_THIN is not set"
+            echo "# CONFIG_LTO_CLANG_FULL is not set"
+
             echo "CONFIG_KSU=y"
             echo "CONFIG_KSU_SUSFS=y"
             echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
@@ -768,16 +772,21 @@ jobs:
       - name: Build kernel
         working-directory: kernel_workspace
         env:
-          # Belt-and-suspenders: build.config.gki does
-          # KMI_SYMBOL_LIST_STRICT_MODE=${KMI_SYMBOL_LIST_STRICT_MODE:-1}
-          # so even if a sed above missed a file, this env var wins because
-          # the default only applies when the var is completely unset.
           KMI_SYMBOL_LIST_STRICT_MODE: "0"
           KMI_ENFORCED: "0"
           TRIM_NONLISTED_KMI: "0"
           TIDY_ABI: "0"
         run: |
           set -euo pipefail
+
+          # Purge thin/full LTO properties inside all profile scripts
+          for f in common/build.config.gki*; do
+            [ -f "$f" ] || continue
+            sed -i 's/LTO=thin/LTO=none/g' "$f" || true
+            sed -i 's/LTO=full/LTO=none/g' "$f" || true
+          done
+
+          # Trigger the compilation with a unified LLVM environment
           LTO=none \
           BUILD_CONFIG=common/build.config.gki.aarch64 \
           USE_CCACHE=1 \
@@ -855,7 +864,6 @@ jobs:
           MODDIR=/data/adb/modules/Wireless-firmware/system/lib/modules
 
           echo "===== $(date) =====" >> $LOG
-
           echo /system/etc/firmware > /sys/module/firmware_class/parameters/path 2>>$LOG
 
           load(){
@@ -868,31 +876,31 @@ jobs:
            fi
           }
 
-          load cfg80211
-          load mac80211
+          # Core wireless subsystems (Only load if not present built-in)
+          if ! lsmod | grep -q "cfg80211"; then load cfg80211; fi
+          if ! lsmod | grep -q "mac80211"; then load mac80211; fi
 
+          # Base stacks & library frameworks
           load ath
-
           load ath9k_hw
           load ath9k_common
-          load ath9k_htc
-          load carl9170
-
           load rt2x00lib
           load rt2x00usb
           load rt2800lib
-          load rt2800usb
 
+          # Final USB hardware drivers
+          load ath9k_htc
+          load carl9170
+          load rt2800usb
           load rtl8187
           load rtl8192cu
-
+          
           rmmod mt7601u 2>/dev/null
           load mt7601u
-
+          
           load rtl8xxxu
 
-          dmesg | grep -i -E "mt7601|firmware|cfg80211|mac80211|ath|ath9k|rt2x00|rt2800|rtl8187" >> $LOG 2>&1
-
+          dmesg | grep -i -E "mt7601|firmware|cfg80211|mac80211|ath|ath9k|rt2x00|rt2800|rtl8187|rtl8xxxu" >> $LOG 2>&1
           echo "Wireless modules finished" >> $LOG
           EOF
           chmod +x wireless_module/service.sh
