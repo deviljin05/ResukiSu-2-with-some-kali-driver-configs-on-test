@@ -743,7 +743,18 @@ jobs:
 
             echo "[*] Patching $f"
 
-            # Clear quoted variables using python (handles both quoted and unquoted)
+            # Clear KMI/module-list variables using python.
+            # IMPORTANT: these variables can be either a single unquoted line
+            # (VAR=value) OR a double-quoted value that spans MULTIPLE lines
+            # (VAR="\nfile1\nfile2\n"). A naive `^VAR=.*$` regex only eats the
+            # first line of the quoted form and leaves the remaining lines
+            # (e.g. "android/abi_gki_aarch64_type_visibility") as bare,
+            # unquoted text in the file. When build.config is later sourced
+            # by bash, those orphaned lines get executed as commands, which
+            # is exactly the "No such file or directory" / exit 127 error.
+            # The pattern below consumes the WHOLE quoted block (scoped
+            # DOTALL via the inline (?s:...) group) or a single unquoted
+            # line, so nothing is left behind.
             python3 - "$f" <<'PYEOF'
           import re
           import sys
@@ -753,8 +764,9 @@ jobs:
               content = fh.read()
 
           for var in ("KMI_SYMBOL_LIST", "ADDITIONAL_KMI_SYMBOL_LISTS", "MODULES_LIST", "MODULES_ORDER"):
-              # Match VAR="..." or VAR=...
-              content = re.sub(rf'^{var}=.*$', f'{var}=', content, flags=re.MULTILINE)
+              # Match VAR="...possibly multi-line..." (quoted) OR VAR=value (single line, unquoted)
+              pattern = re.compile(rf'^{var}=(?:"(?s:.*?)"|[^\n]*)', re.MULTILINE)
+              content = pattern.sub(f'{var}=', content)
 
           with open(path, 'w') as fh:
               fh.write(content)
@@ -784,6 +796,16 @@ jobs:
             # ABI_DEFINITION: just clear it (was the broken line before)
             if grep -q '^ABI_DEFINITION=' "$f"; then
               sed -i 's|^ABI_DEFINITION=.*|ABI_DEFINITION=|' "$f"
+            fi
+
+            # Safety net: after the fix above there should be no stray bare
+            # "android/abi_gki_..." lines left in the file. If there are,
+            # fail loudly here instead of getting a confusing exit-127 deep
+            # inside build.sh.
+            if grep -qE '^android/' "$f"; then
+              echo "::error::$f still has orphaned 'android/...' lines after patching — dumping file:"
+              cat -A "$f" | grep -nE '^android/' || true
+              exit 1
             fi
           done
 
