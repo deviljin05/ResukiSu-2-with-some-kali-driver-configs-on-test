@@ -1015,4 +1015,3 @@ jobs:
             nh-vendor_boot.img
           retention-days: 14
           if-no-files-found: warn
-s
