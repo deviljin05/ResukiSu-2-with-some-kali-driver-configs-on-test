@@ -239,6 +239,11 @@ jobs:
             echo "CONFIG_CRC_ITU_T=m"
 
             echo "CONFIG_WERROR=n"
+
+            # --- BYPASS GKI SYMBOL TRIMMING & VERSION CHECKING ---
+            echo "CONFIG_TRIM_UNUSED_KSYMS=n"
+            echo "CONFIG_MODVERSIONS=n"
+            echo "CONFIG_MODULE_SIG_FORCE=n"
           } >> gki_defconfig
 
       - name: Apply mizdrake7 NetHunter injection patches (rtl8187, zd1211rw, mac80211, cfg80211)
