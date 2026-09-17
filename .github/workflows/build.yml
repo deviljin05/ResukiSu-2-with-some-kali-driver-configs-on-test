@@ -24,7 +24,7 @@ on:
         required: true
         default: "false"
       enable_monitor_channel_bypass:
-        description: "Allow monitor-mode channel switch even with STA/AP up (breaks WiFi+Hotspot coexistence while on — only enable when you actually need packet injection this session)"
+        description: "Allow monitor-mode channel switch even with STA/AP up (breaks WiFi+Hotspot coexistence while on â€” only enable when you actually need packet injection this session)"
         required: true
         default: "false"
 
@@ -235,7 +235,7 @@ jobs:
             echo "CONFIG_RFKILL=y"
             echo "CONFIG_RFKILL_LEDS=y"
 
-            # Crypto — WEP/WPA-TKIP support
+            # Crypto - WEP/WPA-TKIP support
             echo "CONFIG_CRYPTO_ARC4=m"
             echo "CONFIG_CRYPTO_ECB=m"
             echo "CONFIG_CRYPTO_AES=y"
@@ -244,12 +244,9 @@ jobs:
             echo "CONFIG_CRC_ITU_T=m"
 
             # FIX (#5): if the target ROM/kernel enforces module signature
-            # checking (CONFIG_MODULE_SIG_FORCE=y stock-side), unsigned .ko's
-            # from this build fail to load with "invalid module format" /
-            # "unknown symbol" style errors that look like ABI mismatches
-            # but are actually signature rejection. Building with signing
-            # disabled makes the failure mode explicit and consistent instead
-            # of silently depending on what the target ships with.
+            # checking, unsigned .ko's from this build fail to load with
+            # "invalid module format" / "unknown symbol" style errors that
+            # look like ABI mismatches but are actually signature rejection.
             echo "CONFIG_MODULE_SIG=n"
             echo "CONFIG_MODULE_SIG_FORCE=n"
             echo "CONFIG_MODULE_SIG_ALL=n"
@@ -272,7 +269,7 @@ jobs:
               text = p.read_text()
               n = text.count(old)
               if n != 1:
-                  print(f"[WARN] {label}: expected 1 match, found {n} — skipping (check context manually)")
+                  print(f"[WARN] {label}: expected 1 match, found {n} â€” skipping (check context manually)")
                   return
               p.write_text(text.replace(old, new, 1))
               print(f"[ok] {label}")
@@ -380,10 +377,9 @@ jobs:
 
       # FIX (#4): the cfg80211 EBUSY-removal patch permanently kills the
       # check that stops monitor mode from stealing the channel out from
-      # under an active STA/AP interface — that's the direct cause of the
-      # WiFi/Hotspot conflict. Gate it behind the new workflow input instead
-      # of always applying it, so normal WiFi+hotspot behaves unless you
-      # explicitly opt into injection for that build.
+      # under an active STA/AP interface - that's the direct cause of the
+      # WiFi/Hotspot conflict. Gate it behind the workflow input instead
+      # of always applying it.
       - name: Apply cfg80211 monitor channel-switch patch (conditional)
         if: ${{ github.event.inputs.enable_monitor_channel_bypass == 'true' }}
         working-directory: kernel_workspace/common
@@ -396,7 +392,7 @@ jobs:
           new = (
               "\t// Always allow user to change channel, even if there is another normal\n"
               "\t// virtual interface using the device. Enabled via\n"
-              "\t// enable_monitor_channel_bypass workflow input — breaks WiFi/hotspot\n"
+              "\t// enable_monitor_channel_bypass workflow input - breaks WiFi/hotspot\n"
               "\t// coexistence with monitor mode active by design.\n"
               "\t//if (!cfg80211_has_monitors_only(rdev))\n"
               "\t//\treturn -EBUSY;\n"
@@ -404,7 +400,7 @@ jobs:
           text = p.read_text()
           n = text.count(old)
           if n != 1:
-              print(f"[WARN] cfg80211 EBUSY patch: expected 1 match, found {n} — skipping")
+              print(f"[WARN] cfg80211 EBUSY patch: expected 1 match, found {n} â€” skipping")
           else:
               p.write_text(text.replace(old, new, 1))
               print("[ok] cfg80211 monitor channel EBUSY removal (bypass enabled)")
@@ -483,7 +479,7 @@ jobs:
           set -euo pipefail
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
           if ! grep -q "baseband_guard" security/Kconfig; then
-            echo "::error::baseband_guard not found in security/Kconfig after patch — BBG setup likely failed"
+            echo "::error::baseband_guard not found in security/Kconfig after patch â€” BBG setup likely failed"
             exit 1
           fi
           echo "[+] baseband_guard wired into security/Kconfig:"
@@ -825,9 +821,7 @@ jobs:
 
           # FIX (#1/#3): find the actual kernel build's Module.symvers and
           # the exact out/ tree used for this Image, so the modules_install
-          # step below installs .ko's that are guaranteed to match — instead
-          # of grabbing whatever *.ko happens to sit under out/ from any
-          # intermediate build stage.
+          # step below installs .ko's that are guaranteed to match.
           OUT_ROOT=$(dirname "$(find out -name "Module.symvers" | head -n1)")
           [ -n "$OUT_ROOT" ]
           echo "OUT_ROOT=kernel_workspace/${OUT_ROOT}" >> "$GITHUB_ENV"
@@ -835,8 +829,14 @@ jobs:
       # FIX (#1): proper modules_install instead of a blind `find *.ko`
       # fallback. This guarantees every .ko copied into the wireless module
       # was built against the same Module.symvers as the Image we're
-      # packaging — this is the main fix for "invalid module format" /
+      # packaging - this is the main fix for "invalid module format" /
       # "disagrees about version of symbol" / "unknown symbol" errors.
+      # FIX (#7): pass the LLVM toolchain (LLVM=1, ld.lld, llvm-*) and use
+      # llvm-strip explicitly. The host x86 binutils `strip` cannot parse
+      # arm64 ELF .ko files, which caused:
+      #   "strip: Unable to recognise the format of the input file ...michael_mic.ko"
+      # and killed modules_install. DEPMOD=true skips host depmod, which
+      # fails on the custom vermagic (5.10.xxx-BLAZE-STABLE-V1).
       - name: Install kernel modules against matching build tree
         working-directory: kernel_workspace
         run: |
@@ -845,9 +845,25 @@ jobs:
           rm -rf "${MOD_INSTALL_DIR}"
           mkdir -p "${MOD_INSTALL_DIR}"
 
-          # Use the same O= out dir the build used so vermagic matches exactly.
-          make -C common O="$(pwd)/${OUT_ROOT#kernel_workspace/}" \
+          # LLVM strip can handle arm64 ELF modules (host binutils strip cannot)
+          LLVM_STRIP="$(command -v llvm-strip)"
+          if [ -z "${LLVM_STRIP}" ]; then
+            echo "::error::llvm-strip not found in PATH â€” install 'llvm' package"
+            exit 1
+          fi
+          echo "Using STRIP=${LLVM_STRIP} ($("${LLVM_STRIP}" --version | head -n1))"
+
+          OUT_REL="${OUT_ROOT#kernel_workspace/}"
+
+          make -C common O="$(pwd)/${OUT_REL}" \
             ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            STRIP="${LLVM_STRIP}" \
+            DEPMOD=true \
             INSTALL_MOD_PATH="${MOD_INSTALL_DIR}" \
             INSTALL_MOD_STRIP=1 \
             modules_install
@@ -855,7 +871,7 @@ jobs:
           COUNT=$(find "${MOD_INSTALL_DIR}" -name "*.ko" | wc -l)
           echo "Installed ${COUNT} matching .ko modules"
           if [ "${COUNT}" -eq 0 ]; then
-            echo "::error::modules_install produced zero .ko files — check CONFIG_*=m symbols in gki_defconfig actually took effect (run 'grep =m out/.../.config' to verify)"
+            echo "::error::modules_install produced zero .ko files â€” check CONFIG_*=m symbols in gki_defconfig actually took effect (run 'grep =m out/.../.config' to verify)"
             exit 1
           fi
           echo "MOD_INSTALL_DIR=kernel_workspace/mod_install" >> "$GITHUB_ENV"
@@ -875,9 +891,8 @@ jobs:
           mkdir -p wireless_module/META-INF/com/google/android
 
           # FIX (#1 continued): pull only from the verified modules_install
-          # output, not a repo-wide find. This is the change that actually
-          # closes the symbol-mismatch bug — every .ko here now has a
-          # vermagic string that matches the Image being flashed.
+          # output, not a repo-wide find. Every .ko here has a vermagic
+          # string that matches the Image being flashed.
           find "${MOD_INSTALL_DIR}" -name "*.ko" -exec cp {} wireless_module/system/lib/modules/ \;
 
           COUNT=$(find wireless_module/system/lib/modules -name "*.ko" | wc -l)
@@ -962,20 +977,20 @@ jobs:
           set -euo pipefail
           VENDOR_BOOT="kernel_workspace/vendor_boot.img"
           if [ ! -f "$VENDOR_BOOT" ]; then
-            echo "No vendor_boot.img supplied — skipping vendor_boot repack (GKI target has none)."
+            echo "No vendor_boot.img supplied â€” skipping vendor_boot repack (GKI target has none)."
             exit 0
           fi
 
           mkdir -p tools
           curl -fsSL -o tools/unpack_bootimg.py \
             https://raw.githubusercontent.com/mizdrake7/Scripts/main/unpack_bootimg.py 2>/dev/null || \
-            echo "unpack_bootimg.py not found upstream at that path — supply your own tools/unpack_bootimg.py from your device's AOSP tree."
+            echo "unpack_bootimg.py not found upstream at that path â€” supply your own tools/unpack_bootimg.py from your device's AOSP tree."
           curl -fsSL -o tools/mkbootimg.py \
             https://raw.githubusercontent.com/mizdrake7/Scripts/main/mkbootimg.py 2>/dev/null || \
-            echo "mkbootimg.py not found upstream at that path — supply your own tools/mkbootimg.py from your device's AOSP tree."
+            echo "mkbootimg.py not found upstream at that path â€” supply your own tools/mkbootimg.py from your device's AOSP tree."
 
           if [ ! -s tools/unpack_bootimg.py ] || [ ! -s tools/mkbootimg.py ]; then
-            echo "Required mkbootimg tools missing — skipping vendor_boot repack."
+            echo "Required mkbootimg tools missing â€” skipping vendor_boot repack."
             exit 0
           fi
 
