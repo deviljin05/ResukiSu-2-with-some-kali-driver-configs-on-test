@@ -723,6 +723,42 @@ jobs:
           echo "  led_classdev_resume" >> android/abi_gki_aarch64_generic
           echo "  __ieee80211_create_tpt_led_trigger" >> android/abi_gki_aarch64_generic
           echo "  __ieee80211_get_radio_led_name" >> android/abi_gki_aarch64_generic
+          
+          # Inject missing core mac80211/cfg80211 framework connection symbols
+          
+          echo "  wiphy_new_nm" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_queue_work" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_stop_queues" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_wake_queues" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_tx_status" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_find_sta" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_free_hw" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_register_hw" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_unregister_hw" >> android/abi_gki_aarch64_generic
+          echo "  wiphy_to_ieee80211_hw" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_rx_napi" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_queue_delayed_work" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_iterate_active_interfaces_atomic" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_stop_tx_ba_cb_irqsafe" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_free_txskb" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_stop_queue" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_wake_queue" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_tx_status_ext" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_restart_hw" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_iterate_interfaces" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_ctstoself_get" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_rts_get" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_beacon_get_tim" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_rts_duration" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_ctstoself_duration" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_generic_frame_duration" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_tx_status_irqsafe" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_rx_irqsafe" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_queue_stopped" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_send_bar" >> android/abi_gki_aarch64_generic
+          echo "  ieee80211_get_tx_rates" >> android/abi_gki_aarch64_generic
+          echo "  rtl92c_phy_set_rfpath_switch" >> android/abi_gki_aarch64_generic
+
 
           # Neutralize check_defconfig call in build.config.gki (harmless if absent)
           sed -i 's/check_defconfig//' build.config.gki 2>/dev/null || true
@@ -854,7 +890,8 @@ jobs:
 
           echo /system/etc/firmware > /sys/module/firmware_class/parameters/path 2>>$LOG
 
-          # Pehle se chalte hue stock drivers ko remove (saaf) karo taake naye load ho sakein
+          # MediaTek active vendor network aur purane stock frameworks ko clear karo
+          rmmod wlan 2>/dev/null
           rmmod ath9k_htc 2>/dev/null
           rmmod rtl8xxxu 2>/dev/null
           rmmod mac80211 2>/dev/null
@@ -864,7 +901,7 @@ jobs:
            MOD="$1"
            if [ -f "$MODDIR/$MOD.ko" ]; then
              echo "Loading $MOD" >> $LOG
-             # -f lagane se version mismatches bypass ho jate hain
+             # Force flag core version mismatches ko override karega
              insmod "$MODDIR/$MOD.ko" -f >>$LOG 2>&1
            else
              echo "$MOD missing" >> $LOG
