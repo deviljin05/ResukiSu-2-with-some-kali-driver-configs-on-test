@@ -129,9 +129,9 @@ jobs:
           cd kernel_workspace/common/arch/arm64/configs
           {
             # FORCE NON-LTO STRUCT AT CODE LEVEL
-            echo "CONFIG_LTO_NONE=y"
+            echo "# CONFIG_LTO_NONE is not set"
             echo "# CONFIG_LTO_CLANG_THIN is not set"
-            echo "# CONFIG_LTO_CLANG_FULL is not set"
+            echo "CONFIG_LTO_CLANG_FULL=y"
 
             # DISABLE CFI SECURITY ENGINE (BYPASSES NON-LTO BOOTLOOP)
             echo "# CONFIG_CFI_CLANG is not set"
@@ -785,29 +785,15 @@ jobs:
           set -euo pipefail
 
           # Purge thin/full LTO properties inside all profile scripts
-          for f in common/build.config.gki*; do
+                    for f in common/build.config.gki*; do
             [ -f "$f" ] || continue
-            sed -i 's/LTO=thin/LTO=none/g' "$f" || true
-            sed -i 's/LTO=full/LTO=none/g' "$f" || true
+            sed -i 's/LTO=none/LTO=full/g' "$f" || true
+            sed -i 's/LTO=thin/LTO=full/g' "$f" || true
           done
 
-          # Trigger the compilation with a unified LLVM environment
-          LTO=none \
+          LTO=full \
           BUILD_CONFIG=common/build.config.gki.aarch64 \
-          USE_CCACHE=1 \
-          CCACHE_DIR="${CCACHE_DIR}" \
-          LLVM=1 \
-          LLVM_IAS=1 \
-          LD=ld.lld \
-          AR=llvm-ar \
-          NM=llvm-nm \
-          OBJCOPY=llvm-objcopy \
-          OBJDUMP=llvm-objdump \
-          STRIP=llvm-strip \
-          KMI_SYMBOL_LIST_STRICT_MODE=0 \
-          KMI_ENFORCED=0 \
-          TRIM_NONLISTED_KMI=0 \
-          TIDY_ABI=0 \
+          ...
           build/build.sh -j"$(nproc)"
 
       - name: Verify final configs
