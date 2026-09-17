@@ -863,11 +863,18 @@ jobs:
 
           echo /system/etc/firmware > /sys/module/firmware_class/parameters/path 2>>$LOG
 
+          # Pehle se chalte hue stock drivers ko remove (saaf) karo taake naye load ho sakein
+          rmmod ath9k_htc 2>/dev/null
+          rmmod rtl8xxxu 2>/dev/null
+          rmmod mac80211 2>/dev/null
+          rmmod cfg80211 2>/dev/null
+
           load(){
            MOD="$1"
            if [ -f "$MODDIR/$MOD.ko" ]; then
              echo "Loading $MOD" >> $LOG
-             insmod "$MODDIR/$MOD.ko" >>$LOG 2>&1
+             # -f lagane se version mismatches bypass ho jate hain
+             insmod "$MODDIR/$MOD.ko" -f >>$LOG 2>&1
            else
              echo "$MOD missing" >> $LOG
            fi
