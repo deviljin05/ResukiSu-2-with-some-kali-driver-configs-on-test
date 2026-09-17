@@ -240,10 +240,10 @@ jobs:
 
             echo "CONFIG_WERROR=n"
 
-            # --- BYPASS GKI SYMBOL TRIMMING & VERSION CHECKING ---
-            echo "CONFIG_TRIM_UNUSED_KSYMS=n"
-            echo "CONFIG_MODVERSIONS=n"
+            # --- SAFE GKI CONFIGS (NO BOOTLOOP) ---
+            echo "CONFIG_MODVERSIONS=y"
             echo "CONFIG_MODULE_SIG_FORCE=n"
+            echo "CONFIG_MODULE_FORCE_LOAD=y"
           } >> gki_defconfig
 
       - name: Apply mizdrake7 NetHunter injection patches (rtl8187, zd1211rw, mac80211, cfg80211)
@@ -714,6 +714,16 @@ jobs:
           set -euo pipefail
           cd common
 
+          # Inject missing wireless/USB symbols directly into GKI allowlist to prevent Unknown Symbol errors
+          echo "  usb_init_urb" >> android/abi_gki_aarch64_generic
+          echo "  eeprom_93cx6_read" >> android/abi_gki_aarch64_generic
+          echo "  eeprom_93cx6_multiread" >> android/abi_gki_aarch64_generic
+          echo "  firmware_request_cache" >> android/abi_gki_aarch64_generic
+          echo "  led_classdev_suspend" >> android/abi_gki_aarch64_generic
+          echo "  led_classdev_resume" >> android/abi_gki_aarch64_generic
+          echo "  __ieee80211_create_tpt_led_trigger" >> android/abi_gki_aarch64_generic
+          echo "  __ieee80211_get_radio_led_name" >> android/abi_gki_aarch64_generic
+
           # Neutralize check_defconfig call in build.config.gki (harmless if absent)
           sed -i 's/check_defconfig//' build.config.gki 2>/dev/null || true
 
@@ -723,7 +733,7 @@ jobs:
           # KMI_SYMBOL_LIST to satisfy it. Also drop the ABI check and
           # KMI enforcement, or build.sh dies at olddefconfig/abi steps too.
           for f in build.config build.config.gki build.config.gki.aarch64 build.config.common build.config.aarch64; do
-            [ -f "$f" ] || continue
+            [ -f "\$f" ] || continue
 
             # KMI_SYMBOL_LIST, ADDITIONAL_KMI_SYMBOL_LISTS, MODULES_LIST,
             # MODULES_ORDER are bash strings that can legally span MANY
@@ -740,28 +750,28 @@ jobs:
             # such file or directory", exit 127). Use a slurp-mode regex
             # so the WHOLE quoted block (opening line through closing
             # quote, however many lines it spans) is replaced in one go.
-            perl -0777 -i -pe 's/KMI_SYMBOL_LIST="[^"]*"/KMI_SYMBOL_LIST=""/gs' "$f"
-            perl -0777 -i -pe 's/ADDITIONAL_KMI_SYMBOL_LISTS="[^"]*"/ADDITIONAL_KMI_SYMBOL_LISTS=""/gs' "$f"
-            perl -0777 -i -pe 's/MODULES_LIST="[^"]*"/MODULES_LIST=""/gs' "$f"
-            perl -0777 -i -pe 's/MODULES_ORDER="[^"]*"/MODULES_ORDER=""/gs' "$f"
+            perl -0777 -i -pe 's/KMI_SYMBOL_LIST="[^"]*"/KMI_SYMBOL_LIST=""/gs' "\$f"
+            perl -0777 -i -pe 's/ADDITIONAL_KMI_SYMBOL_LISTS="[^"]*"/ADDITIONAL_KMI_SYMBOL_LISTS=""/gs' "\$f"
+            perl -0777 -i -pe 's/MODULES_LIST="[^"]*"/MODULES_LIST=""/gs' "\$f"
+            perl -0777 -i -pe 's/MODULES_ORDER="[^"]*"/MODULES_ORDER=""/gs' "\$f"
             # Also handle the unquoted single-token form some configs use
             # (KMI_SYMBOL_LIST=some/path with no quotes at all).
-            sed -i 's/^KMI_SYMBOL_LIST=[^"].*/KMI_SYMBOL_LIST=/' "$f"
-            sed -i 's/^ADDITIONAL_KMI_SYMBOL_LISTS=[^"].*/ADDITIONAL_KMI_SYMBOL_LISTS=/' "$f"
-            sed -i 's/^MODULES_LIST=[^"].*/MODULES_LIST=/' "$f"
-            sed -i 's/^MODULES_ORDER=[^"].*/MODULES_ORDER=/' "$f"
+            sed -i 's/^KMI_SYMBOL_LIST=[^"].*/KMI_SYMBOL_LIST=/' "\$f"
+            sed -i 's/^ADDITIONAL_KMI_SYMBOL_LISTS=[^"].*/ADDITIONAL_KMI_SYMBOL_LISTS=/' "\$f"
+            sed -i 's/^MODULES_LIST=[^"].*/MODULES_LIST=/' "\$f"
+            sed -i 's/^MODULES_ORDER=[^"].*/MODULES_ORDER=/' "\$f"
 
             # These are plain single-line booleans/paths — a simple sed is safe.
-            grep -q '^KMI_SYMBOL_LIST_STRICT_MODE=' "$f" && \
-              sed -i 's/^KMI_SYMBOL_LIST_STRICT_MODE=.*/KMI_SYMBOL_LIST_STRICT_MODE=0/' "$f"
-            grep -q '^TRIM_NONLISTED_KMI=' "$f" && \
-              sed -i 's/^TRIM_NONLISTED_KMI=.*/TRIM_NONLISTED_KMI=0/' "$f"
-            grep -q '^KMI_ENFORCED=' "$f" && \
-              sed -i 's/^KMI_ENFORCED=.*/KMI_ENFORCED=0/' "$f"
-            grep -q '^ABI_DEFINITION=' "$f" && \
-              sed -i 's/^ABI_DEFINITION=.*/ABI_DEFINITION=/' "$f"
-            grep -q '^TIDY_ABI=' "$f" && \
-              sed -i 's/^TIDY_ABI=.*/TIDY_ABI=0/' "$f"
+            grep -q '^KMI_SYMBOL_LIST_STRICT_MODE=' "\$f" && \
+              sed -i 's/^KMI_SYMBOL_LIST_STRICT_MODE=.*/KMI_SYMBOL_LIST_STRICT_MODE=0/' "\$f"
+            grep -q '^TRIM_NONLISTED_KMI=' "\$f" && \
+              sed -i 's/^TRIM_NONLISTED_KMI=.*/TRIM_NONLISTED_KMI=0/' "\$f"
+            grep -q '^KMI_ENFORCED=' "\$f" && \
+              sed -i 's/^KMI_ENFORCED=.*/KMI_ENFORCED=0/' "\$f"
+            grep -q '^ABI_DEFINITION=' "\$f" && \
+              sed -i 's/^ABI_DEFINITION=.*/ABI_DEFINITION=/' "\$f"
+            grep -q '^TIDY_ABI=' "\$f" && \
+              sed -i 's/^TIDY_ABI=.*/TIDY_ABI=0/' "\$f"
           done
 
           echo "---- resulting KMI/ABI-related lines ----"
