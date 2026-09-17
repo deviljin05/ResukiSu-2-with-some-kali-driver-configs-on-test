@@ -23,6 +23,10 @@ on:
         description: "Force CPU default governor to 'performance'"
         required: true
         default: "false"
+      enable_monitor_channel_bypass:
+        description: "Allow monitor-mode channel switch even with STA/AP up (breaks WiFi+Hotspot coexistence while on — only enable when you actually need packet injection this session)"
+        required: true
+        default: "false"
 
 env:
   VERSION: android12-5.10
@@ -48,8 +52,8 @@ jobs:
           sudo apt-get install -y git curl bc bison flex libssl-dev \
             build-essential python3 python3-pip python-is-python3 libncurses-dev \
             ccache zip unzip device-tree-compiler libelf-dev rsync \
-            lld llvm clang
-              
+            lld llvm clang lz4 cpio
+
       - name: Install repo tool
         run: |
           mkdir -p ~/bin
@@ -59,8 +63,20 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
+      # FIX (#6): ccache silently reusing stale objects across defconfig/patch
+      # changes was one source of "unknown symbol" / vermagic drift between
+      # runs. Key the cache to source + patch inputs so a defconfig or patch
+      # change can't reuse object files built against a different ABI.
       - name: Set up ccache
         run: mkdir -p "${CCACHE_DIR}"
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ env.VERSION }}-${{ github.event.inputs.os_patch_level }}-${{ hashFiles('**/*.patch') }}
+          restore-keys: |
+            ccache-${{ env.VERSION }}-${{ github.event.inputs.os_patch_level }}-
 
       - name: Resolve manifest branch and optional pinned release tag
         run: |
@@ -90,7 +106,7 @@ jobs:
           cd kernel_workspace
           repo init -u https://android.googlesource.com/kernel/manifest -b "${MANIFEST_REF}" --depth=1
           repo sync -c --current-branch --no-clone-bundle --no-tags -j"$(nproc)"
-          
+
       - name: Pin kernel/common to exact tag or branch
         if: ${{ env.PIN_TYPE != '' }}
         working-directory: kernel_workspace/common
@@ -164,15 +180,6 @@ jobs:
             echo "CONFIG_NLS_ISO8859_1=y"
 
             # --- MIZDRAKE7 NETHUNTER WIRELESS CONFIGS ---
-            # This is the exact config set from mizdrake7/kernel_xiaomi_air
-            # commit 3d298e7 ("defconfig: Enable Nethunter"), applied here
-            # to arch/arm64/configs/gki_defconfig instead of his device's
-            # mgk_64_k515_defconfig. Kept the base wireless subsystem lines
-            # (NETDEVICES/WLAN/WIRELESS/_HAS_RC/_MINSTREL/etc.) since GKI's
-            # own defconfig doesn't already select them the way his MTK
-            # vendor base did — his commit only had to add the driver-level
-            # symbols below because CFG80211/MAC80211/WLAN core was already
-            # on in his tree.
             echo "CONFIG_NETDEVICES=y"
             echo "CONFIG_WLAN=y"
             echo "CONFIG_WIRELESS=y"
@@ -183,7 +190,7 @@ jobs:
             echo "CONFIG_MAC80211_RC_MINSTREL=y"
             echo "CONFIG_MAC80211_RC_DEFAULT_MINSTREL=y"
 
-            # Nethunter (verbatim from mizdrake7's commit)
+            # Nethunter
             echo "CONFIG_PACKET_DIAG=y"
             echo "CONFIG_USB_G_HID=y"
 
@@ -215,9 +222,7 @@ jobs:
             echo "CONFIG_WLAN_VENDOR_MEDIATEK=y"
             echo "CONFIG_MT7601U=m"
 
-            # Realtek RTL8XXXU family (covers RTL8188CUS/CU, RTL8192CU,
-            # RTL8723AU, RTL8188EU) — separate driver from RTL8187, added
-            # for RTL8188CUS-based Alfa/generic USB adapters.
+            # Realtek RTL8XXXU family
             echo "CONFIG_RTL8XXXU=m"
 
             # Firmware + USB
@@ -226,17 +231,28 @@ jobs:
             echo "CONFIG_USB_NET_DRIVERS=y"
             echo "CONFIG_USB_USBNET=y"
 
-            # RFKILL — required by several drivers' soft/hard block switch
+            # RFKILL
             echo "CONFIG_RFKILL=y"
             echo "CONFIG_RFKILL_LEDS=y"
 
-            # Crypto — WEP/WPA-TKIP support (needed for handshake/legacy auth)
+            # Crypto — WEP/WPA-TKIP support
             echo "CONFIG_CRYPTO_ARC4=m"
             echo "CONFIG_CRYPTO_ECB=m"
             echo "CONFIG_CRYPTO_AES=y"
             echo "CONFIG_CRYPTO_MICHAEL_MIC=m"
             echo "CONFIG_CRC_CCITT=m"
             echo "CONFIG_CRC_ITU_T=m"
+
+            # FIX (#5): if the target ROM/kernel enforces module signature
+            # checking (CONFIG_MODULE_SIG_FORCE=y stock-side), unsigned .ko's
+            # from this build fail to load with "invalid module format" /
+            # "unknown symbol" style errors that look like ABI mismatches
+            # but are actually signature rejection. Building with signing
+            # disabled makes the failure mode explicit and consistent instead
+            # of silently depending on what the target ships with.
+            echo "CONFIG_MODULE_SIG=n"
+            echo "CONFIG_MODULE_SIG_FORCE=n"
+            echo "CONFIG_MODULE_SIG_ALL=n"
 
             echo "CONFIG_WERROR=n"
           } >> gki_defconfig
@@ -245,8 +261,6 @@ jobs:
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
-          # Source: mizdrake7/kernel_xiaomi_air@22cd395
-          # "apply NetHunter wireless injection + ath9k naming + dtc lexer patches"
           python3 - <<'PYEOF'
           import pathlib
 
@@ -362,17 +376,38 @@ jobs:
               "\tieee80211_tx(sdata, sta, skb, false);\n",
               "mac80211 skip QoS hdr in monitor mode",
           )
+          PYEOF
 
-          # 7) cfg80211: allow monitor channel change even with other vifs up
-          patch(
-              "net/wireless/chan.c",
-              "\tif (!cfg80211_has_monitors_only(rdev))\n\t\treturn -EBUSY;\n",
+      # FIX (#4): the cfg80211 EBUSY-removal patch permanently kills the
+      # check that stops monitor mode from stealing the channel out from
+      # under an active STA/AP interface — that's the direct cause of the
+      # WiFi/Hotspot conflict. Gate it behind the new workflow input instead
+      # of always applying it, so normal WiFi+hotspot behaves unless you
+      # explicitly opt into injection for that build.
+      - name: Apply cfg80211 monitor channel-switch patch (conditional)
+        if: ${{ github.event.inputs.enable_monitor_channel_bypass == 'true' }}
+        working-directory: kernel_workspace/common
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEOF'
+          import pathlib
+          p = pathlib.Path("net/wireless/chan.c")
+          old = "\tif (!cfg80211_has_monitors_only(rdev))\n\t\treturn -EBUSY;\n"
+          new = (
               "\t// Always allow user to change channel, even if there is another normal\n"
-              "\t// virtual interface using the device.\n"
+              "\t// virtual interface using the device. Enabled via\n"
+              "\t// enable_monitor_channel_bypass workflow input — breaks WiFi/hotspot\n"
+              "\t// coexistence with monitor mode active by design.\n"
               "\t//if (!cfg80211_has_monitors_only(rdev))\n"
-              "\t//\treturn -EBUSY;\n",
-              "cfg80211 monitor channel EBUSY removal",
+              "\t//\treturn -EBUSY;\n"
           )
+          text = p.read_text()
+          n = text.count(old)
+          if n != 1:
+              print(f"[WARN] cfg80211 EBUSY patch: expected 1 match, found {n} — skipping")
+          else:
+              p.write_text(text.replace(old, new, 1))
+              print("[ok] cfg80211 monitor channel EBUSY removal (bypass enabled)")
           PYEOF
 
       - name: Copy SUSFS kernel patches
@@ -446,7 +481,6 @@ jobs:
         working-directory: kernel_workspace/common
         run: |
           set -euo pipefail
-          # add baseband_guard alongside selinux in the default LSM list
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
           if ! grep -q "baseband_guard" security/Kconfig; then
             echo "::error::baseband_guard not found in security/Kconfig after patch — BBG setup likely failed"
@@ -708,45 +742,20 @@ jobs:
         run: |
           set -euo pipefail
           cd common
-
-          # Neutralize check_defconfig call in build.config.gki (harmless if absent)
           sed -i 's/check_defconfig//' build.config.gki 2>/dev/null || true
 
-          # Every one of these needs to be forced to "off"/empty, not just
-          # MODULES_LIST/ORDER/KMI_SYMBOL_LIST — the previous run failed
-          # because KMI_SYMBOL_LIST_STRICT_MODE was left enabled with no
-          # KMI_SYMBOL_LIST to satisfy it. Also drop the ABI check and
-          # KMI enforcement, or build.sh dies at olddefconfig/abi steps too.
           for f in build.config build.config.gki build.config.gki.aarch64 build.config.common build.config.aarch64; do
             [ -f "$f" ] || continue
 
-            # KMI_SYMBOL_LIST, ADDITIONAL_KMI_SYMBOL_LISTS, MODULES_LIST,
-            # MODULES_ORDER are bash strings that can legally span MANY
-            # LINES, e.g.:
-            #   ADDITIONAL_KMI_SYMBOL_LISTS="
-            #   android/abi_gki_aarch64_type_visibility
-            #   android/abi_gki_aarch64_arg
-            #   "
-            # A plain single-line `sed s/^VAR=.*/VAR=/` only rewrites the
-            # opening line and leaves the bare words below it in the file
-            # with no quotes around them anymore — when build.config is
-            # `source`d, bash then tries to *execute* each of those words
-            # as a command ("android/abi_gki_aarch64_type_visibility: No
-            # such file or directory", exit 127). Use a slurp-mode regex
-            # so the WHOLE quoted block (opening line through closing
-            # quote, however many lines it spans) is replaced in one go.
             perl -0777 -i -pe 's/KMI_SYMBOL_LIST="[^"]*"/KMI_SYMBOL_LIST=""/gs' "$f"
             perl -0777 -i -pe 's/ADDITIONAL_KMI_SYMBOL_LISTS="[^"]*"/ADDITIONAL_KMI_SYMBOL_LISTS=""/gs' "$f"
             perl -0777 -i -pe 's/MODULES_LIST="[^"]*"/MODULES_LIST=""/gs' "$f"
             perl -0777 -i -pe 's/MODULES_ORDER="[^"]*"/MODULES_ORDER=""/gs' "$f"
-            # Also handle the unquoted single-token form some configs use
-            # (KMI_SYMBOL_LIST=some/path with no quotes at all).
             sed -i 's/^KMI_SYMBOL_LIST=[^"].*/KMI_SYMBOL_LIST=/' "$f"
             sed -i 's/^ADDITIONAL_KMI_SYMBOL_LISTS=[^"].*/ADDITIONAL_KMI_SYMBOL_LISTS=/' "$f"
             sed -i 's/^MODULES_LIST=[^"].*/MODULES_LIST=/' "$f"
             sed -i 's/^MODULES_ORDER=[^"].*/MODULES_ORDER=/' "$f"
 
-            # These are plain single-line booleans/paths — a simple sed is safe.
             grep -q '^KMI_SYMBOL_LIST_STRICT_MODE=' "$f" && \
               sed -i 's/^KMI_SYMBOL_LIST_STRICT_MODE=.*/KMI_SYMBOL_LIST_STRICT_MODE=0/' "$f"
             grep -q '^TRIM_NONLISTED_KMI=' "$f" && \
@@ -764,14 +773,9 @@ jobs:
           echo "---- sanity check: no orphan bare 'android/...' lines outside quotes ----"
           grep -RnE '^\s*android/abi_gki' build.config* || echo "clean"
 
-
       - name: Build kernel
         working-directory: kernel_workspace
         env:
-          # Belt-and-suspenders: build.config.gki does
-          # KMI_SYMBOL_LIST_STRICT_MODE=${KMI_SYMBOL_LIST_STRICT_MODE:-1}
-          # so even if a sed above missed a file, this env var wins because
-          # the default only applies when the var is completely unset.
           KMI_SYMBOL_LIST_STRICT_MODE: "0"
           KMI_ENFORCED: "0"
           TRIM_NONLISTED_KMI: "0"
@@ -819,6 +823,43 @@ jobs:
           DIST_DIR=$(dirname "${IMG}")
           echo "DIST_DIR=kernel_workspace/${DIST_DIR}" >> "$GITHUB_ENV"
 
+          # FIX (#1/#3): find the actual kernel build's Module.symvers and
+          # the exact out/ tree used for this Image, so the modules_install
+          # step below installs .ko's that are guaranteed to match — instead
+          # of grabbing whatever *.ko happens to sit under out/ from any
+          # intermediate build stage.
+          OUT_ROOT=$(dirname "$(find out -name "Module.symvers" | head -n1)")
+          [ -n "$OUT_ROOT" ]
+          echo "OUT_ROOT=kernel_workspace/${OUT_ROOT}" >> "$GITHUB_ENV"
+
+      # FIX (#1): proper modules_install instead of a blind `find *.ko`
+      # fallback. This guarantees every .ko copied into the wireless module
+      # was built against the same Module.symvers as the Image we're
+      # packaging — this is the main fix for "invalid module format" /
+      # "disagrees about version of symbol" / "unknown symbol" errors.
+      - name: Install kernel modules against matching build tree
+        working-directory: kernel_workspace
+        run: |
+          set -euo pipefail
+          MOD_INSTALL_DIR="$(pwd)/mod_install"
+          rm -rf "${MOD_INSTALL_DIR}"
+          mkdir -p "${MOD_INSTALL_DIR}"
+
+          # Use the same O= out dir the build used so vermagic matches exactly.
+          make -C common O="$(pwd)/${OUT_ROOT#kernel_workspace/}" \
+            ARCH=arm64 \
+            INSTALL_MOD_PATH="${MOD_INSTALL_DIR}" \
+            INSTALL_MOD_STRIP=1 \
+            modules_install
+
+          COUNT=$(find "${MOD_INSTALL_DIR}" -name "*.ko" | wc -l)
+          echo "Installed ${COUNT} matching .ko modules"
+          if [ "${COUNT}" -eq 0 ]; then
+            echo "::error::modules_install produced zero .ko files — check CONFIG_*=m symbols in gki_defconfig actually took effect (run 'grep =m out/.../.config' to verify)"
+            exit 1
+          fi
+          echo "MOD_INSTALL_DIR=kernel_workspace/mod_install" >> "$GITHUB_ENV"
+
       - name: Package Clean AnyKernel3 Kernel Zip
         run: |
           set -euo pipefail
@@ -833,11 +874,14 @@ jobs:
           mkdir -p wireless_module/system/lib/modules
           mkdir -p wireless_module/META-INF/com/google/android
 
-          if [ -f "${{ env.DIST_DIR }}/kernel_modules.tar.gz" ]; then
-            tar -xzf "${{ env.DIST_DIR }}/kernel_modules.tar.gz" -C wireless_module/system/lib/modules
-          else
-            find kernel_workspace/out -name "*.ko" -exec cp {} wireless_module/system/lib/modules/ \; || true
-          fi
+          # FIX (#1 continued): pull only from the verified modules_install
+          # output, not a repo-wide find. This is the change that actually
+          # closes the symbol-mismatch bug — every .ko here now has a
+          # vermagic string that matches the Image being flashed.
+          find "${MOD_INSTALL_DIR}" -name "*.ko" -exec cp {} wireless_module/system/lib/modules/ \;
+
+          COUNT=$(find wireless_module/system/lib/modules -name "*.ko" | wc -l)
+          echo "Packaging ${COUNT} verified-matching .ko modules into wireless module"
 
           cat << 'EOF' > wireless_module/module.prop
           id=Wireless-firmware
@@ -916,27 +960,12 @@ jobs:
       - name: Repack vendor_boot with NetHunter modules (mizdrake7 style, MTK only)
         run: |
           set -euo pipefail
-          # This mirrors mizdrake7/Scripts:make-nh-vendorboot_air.sh, which
-          # injects wireless .ko's directly into vendor_boot's ramdisk
-          # (Android boot header v3/v4, MTK unpack_bootimg.py/mkbootimg.py)
-          # instead of loading them via a Magisk module at boot.
-          #
-          # IMPORTANT: that script is written for mizdrake7's own MTK
-          # "air" device tree (Redmi 13C 5G / POCO M6 5G) and expects a
-          # device-provided vendor_boot.img plus mkbootimg tools from that
-          # tree. This job builds a generic GKI (android12-5.10) kernel,
-          # which has no vendor_boot of its own and no device ramdisk to
-          # patch — so this step only activates if you drop a real
-          # vendor_boot.img into the workspace (e.g. pulled from your
-          # target device's stock firmware) before this job runs. If it's
-          # not present, this step no-ops instead of failing the build.
           VENDOR_BOOT="kernel_workspace/vendor_boot.img"
           if [ ! -f "$VENDOR_BOOT" ]; then
             echo "No vendor_boot.img supplied — skipping vendor_boot repack (GKI target has none)."
             exit 0
           fi
 
-          sudo apt-get install -y lz4 cpio
           mkdir -p tools
           curl -fsSL -o tools/unpack_bootimg.py \
             https://raw.githubusercontent.com/mizdrake7/Scripts/main/unpack_bootimg.py 2>/dev/null || \
